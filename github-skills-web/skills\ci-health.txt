@@ -1,0 +1,179 @@
+# gitlink-ci-health（CI 健康巡检）
+
+**CRITICAL — 开始前必须先阅读 [`../gitlink-shared/SKILL.md`](../gitlink-shared/SKILL.md)，其中包含认证、权限处理和 API 注意事项。**
+**CRITICAL — 本 Skill 为只读操作。CI 激活/关闭需通过 GitLink Web 界面操作，CLI 不提供对应命令。**
+**CRITICAL — GitLink 操作只能用 `gitlink-cli`。禁止用 `gh`（GitHub CLI）操作 GitLink 资源。**
+
+> **前置条件：** 先阅读 [`../gitlink-shared/SKILL.md`](../gitlink-shared/SKILL.md) 了解认证和全局参数。
+
+---
+
+## 功能概述
+
+面向维护者的 CI/CD 健康度巡检工具：
+
+1. **授权检查** — 确认仓库 CI 是否已激活
+2. **构建历史** — 获取近期构建列表
+3. **成功率统计** — 计算构建成功率和平均耗时
+4. **故障分析** — 识别频繁失败的构建及其原因
+5. **健康报告** — 生成 CI 健康度评分和改进建议
+
+---
+
+## 工作流：CI 健康巡检
+
+### Step 1：检查 CI 授权状态
+
+**方法 1（推荐）**：通过 `repo +info` 查看 `open_devops` 字段：
+
+```bash
+gitlink-cli repo +info --owner <owner> --repo <repo> --format json
+```
+
+- `"open_devops": true` → CI 已激活
+- `"open_devops": false` → CI 未激活
+
+**方法 2**：直接调用 `ci +builds`，CI 未激活时返回：
+
+```json
+{"status": -1, "message": "接口数据异常"}
+```
+
+> ⚠️ `ci +authorize` 命令在当前 CLI 版本（v0.1.18）中**不存在**。可用 CI 命令仅：`+builds`、`+logs`、`+restart`、`+stop`。
+
+若 CI 未激活，报告中说明"CI 未启用"，建议通过 GitLink Web 界面（仓库设置 → DevOps）开启，随后不再继续后续步骤。
+
+### Step 2：获取构建历史
+
+```bash
+gitlink-cli ci +builds --owner <owner> --repo <repo> --format json
+```
+
+提取每次构建的：
+- `status` — 构建状态（success/failed/running/pending）
+- `created_at` / `finished_at` — 时间信息
+- `duration` — 耗时（如有）
+- `branch` — 触发分支
+
+如构建数量 >30，取最近 30 次分析。
+
+### Step 3：构建日志（失败构建）
+
+对状态为 failed 的构建获取日志：
+
+```bash
+gitlink-cli ci +logs --owner <owner> --repo <repo> --build <build_id> --format json
+```
+
+> ⚠️ **控制调用量**：仅对最近 5 次失败构建获取日志，避免过多 API 调用。日志可能过大，提取关键错误行（最后 20 行）。
+
+### Step 4：统计分析
+
+#### 4.1 成功率计算
+
+| 指标 | 计算方式 |
+|------|----------|
+| 整体成功率 | 成功构建数 / 总构建数 × 100% |
+| 近 10 次成功率 | 最近 10 次中成功占比 |
+| 平均修复时间 | 从失败到下次成功的平均间隔 |
+
+#### 4.2 健康度评分（满分 20）
+
+| 维度 | 权重 | 评分标准 |
+|------|------|----------|
+| CI 激活 | 4 | 已激活=4，未激活=0 |
+| 构建成功率 | 5 | ≥90%=5，≥80%=4，≥70%=3，≥50%=2，<50%=1 |
+| 近期稳定性 | 5 | 近10次全部成功=5，8-9次=4，6-7次=3，4-5次=2，<4次=1 |
+| 构建频率 | 3 | 每天有构建=3，2-3天=2，每周=1，更少=0 |
+| 修复速度 | 3 | 失败后1次内修复=3，2-3次=2，>3次=1 |
+
+### Step 5：生成 CI 健康报告
+
+---
+
+## 输出模板
+
+```markdown
+# 🔧 CI 健康巡检报告：{{仓库名}}
+
+> 巡检时间：{{当前时间}}
+> 仓库：{{full_name}}
+> CI 状态：{{ci_status_display}}
+
+---
+
+## 一、健康度总览
+
+| 指标 | 数值 | 评分 |
+|------|------|------|
+| CI 激活状态 | {{activated_status}} | {{activate_score}}/4 |
+| 整体成功率 | {{success_rate}}%（{{success_count}}/{{total_count}}） | {{success_score}}/5 |
+| 近期稳定性 | 近 10 次 {{recent_success}} 次成功 | {{stability_score}}/5 |
+| 构建频率 | {{build_frequency_desc}} | {{frequency_score}}/3 |
+| 修复速度 | {{repair_speed_desc}} | {{repair_score}}/3 |
+| **总分** | | **{{total_score}}/20** |
+
+## 二、构建趋势
+
+```
+最近 20 次构建：
+✅✅❌✅✅✅❌✅✅✅✅✅❌✅✅✅✅✅✅
+（✅=成功  ❌=失败）
+```
+
+| 时间段 | 总构建 | 成功 | 失败 | 成功率 |
+|--------|--------|------|------|--------|
+| 最近 7 天 | {{w1_total}} | {{w1_success}} | {{w1_fail}} | {{w1_rate}}% |
+| 7-14 天 | {{w2_total}} | {{w2_success}} | {{w2_fail}} | {{w2_rate}}% |
+| 14-30 天 | {{w3_total}} | {{w3_success}} | {{w3_fail}} | {{w3_rate}}% |
+
+## 三、故障分析
+
+> 如无失败构建，输出：**🎉 分析期内无失败构建，CI 运行健康。**
+
+| 构建 ID | 分支 | 失败时间 | 错误摘要 |
+|---------|------|----------|----------|
+| {{id}} | {{branch}} | {{time}} | {{error_summary}} |
+
+### 故障模式分类
+
+| 故障类型 | 次数 | 占比 |
+|----------|------|------|
+| 编译错误 | {{compile_count}} | {{compile_pct}}% |
+| 测试失败 | {{test_fail_count}} | {{test_fail_pct}}% |
+| 超时 | {{timeout_count}} | {{timeout_pct}}% |
+| 环境问题 | {{env_count}} | {{env_pct}}% |
+| 其他 | {{other_count}} | {{other_pct}}% |
+
+## 四、改进建议
+
+<!-- 根据分析结果，从以下列表中选择匹配的建议输出 -->
+
+- **立即激活 CI**（当 CI 未激活时）：前往 GitLink Web 界面 → 仓库设置 → DevOps 开启 CI/CD 服务（CLI 暂不支持 `ci +activate`）
+- **提升成功率**（当 success_rate < 80% 时）：优先修复高频失败原因
+- **增加构建频率**（当构建频率评分 < 2 时）：建议每次 push 触发 CI
+- **缩短修复时间**（当修复速度评分 < 2 时）：建立 CI 失败告警
+```
+
+---
+
+## 异常场景处理
+
+| 场景 | 处理方式 |
+|------|----------|
+| CI 未激活 | 报告 CI 状态为"未激活"，建议通过 Web 界面开启，不再继续后续步骤 |
+| 无构建记录 | 标注"仓库暂无 CI 构建记录" |
+| `ci +logs` 返回空 | 标注"日志不可用" |
+| 构建总数 < 5 | 样本量不足，标注"数据有限，统计不具代表性" |
+
+---
+
+## 注意事项
+
+- ✅ **所有命令使用 `--format json`**，确保可解析
+- ✅ **CI 激活/关闭需通过 GitLink Web 界面**，CLI 不提供 `+activate`/`+deactivate` 命令
+- ✅ **Owner/repo 优先从 `git remote` 自动解析**
+- ⚠️ **`ci +logs` 输出可能很大**，仅提取关键错误行
+- ⚠️ **构建历史无分页参数**，实际返回条数取决于 API
+- ⚠️ **CI 数据仅反映 GitLink 平台活动**，不包括第三方 CI 服务
+- ⚠️ **`repo +info` 的 `open_devops` 字段**是判断 CI 是否激活的最可靠方式

@@ -1,0 +1,246 @@
+# gitlink-research-tracker（科研热点追踪）
+
+**CRITICAL — 开始前必须先阅读 [`../gitlink-shared/SKILL.md`](../gitlink-shared/SKILL.md)，其中包含认证、权限处理和 API 注意事项。**
+**CRITICAL — 本 Skill 为只读操作，不会修改任何仓库。无需用户额外确认即可执行。**
+**CRITICAL — GitLink 操作只能用 `gitlink-cli`。禁止用 `gh`（GitHub CLI）操作 GitLink 资源。**
+
+> **前置条件：** 先阅读 [`../gitlink-shared/SKILL.md`](../gitlink-shared/SKILL.md) 了解认证和全局参数。
+
+---
+
+## 功能概述
+
+面向科研场景的技术调研工具，帮助研究者快速了解 GitLink 平台上的技术格局：
+
+1. **多关键词搜索** — 将研究主题拆解为多个关键词，全面覆盖相关项目
+2. **项目深度评估** — 从活跃度、社区规模、代码产出等维度评估项目健康度
+3. **横向对比** — 对比同类项目的核心指标，识别领先者和潜力项目
+4. **趋势洞察** — 基于更新时间、贡献者增长、版本发布频率等推断技术趋势
+5. **调研报告** — 生成结构化的技术调研简报
+
+---
+
+## 工作流：技术调研全流程
+
+### Step 1：理解研究主题，拆解搜索关键词
+
+根据用户的研究主题，拆解 3~5 个搜索关键词：
+
+| 研究主题示例 | 拆解关键词 |
+|-------------|-----------|
+| "AI Agent 工具" | `agent`, `AI`, `LLM`, `智能体`, `copilot` |
+| "DevOps 流水线" | `devops`, `pipeline`, `CI/CD`, `自动化部署`, `容器` |
+| "开源合规" | `license`, `compliance`, `合规`, `sbom`, `供应链安全` |
+| "微服务框架" | `microservice`, `微服务`, `rpc`, `服务网格`, `cloud native` |
+
+> **原则**：关键词应覆盖中英文、缩写全称、技术术语和行业叫法。每个关键词独立搜索。
+
+### Step 2：多关键词搜索
+
+对每个关键词执行搜索：
+
+```bash
+gitlink-cli search +repos -k <关键词> --format json
+```
+
+对每个搜索结果，提取：
+
+| SKILL 中用到的概念 | 实际字段来源 | 说明 |
+|-------------------|-------------|------|
+| owner/repo 标识 | `author.login` + `/` + `identifier` | 搜索结果**没有** `full_name`，需手动拼接。`identifier` 是仓库的唯一标识符 |
+| 项目描述 | `description` | 直接可用 |
+| 关注度 | `praises_count` | 搜索结果中叫 `praises_count`，**不是** `stars`。`watchers_count` 仅在 `repo +info` 中返回 |
+| Fork 数 | `forked_count` | 搜索结果中叫 `forked_count`，**不是** `forks_count` |
+| 编程语言 | `language.name` | `language` 是嵌套对象 `{id, name}`，需取 `.name`。可能为 `null` |
+| 更新时间 | `last_update_time`（Unix 时间戳）或 `full_last_update_time`（ISO 8601 字符串） | 搜索结果中**没有** `updated_at` |
+| 是否镜像 | `mirror` | 仅在 `repo +info` 返回。GitLink 上大量仓库是 GitHub 镜像，需特别标注 |
+
+**去重规则**：用 `author.login/identifier` 作为唯一标识。同一仓库出现在多个关键词结果中时，只保留一次，标注匹配了哪些关键词。
+
+**数量控制**：每个关键词保留前 8 个结果。合并去重后总数控制在 20 个以内。超出时优先保留匹配多关键词的和 `last_update_time` 最近的。
+
+### Step 3：重点项目深度评估
+
+对合并去重后的每个项目，获取详细指标：
+
+```bash
+gitlink-cli repo +info --owner <owner> --repo <repo> --format json
+```
+
+从返回数据中提取核心评估维度：
+
+| 维度 | 字段 | 评估标准 |
+|------|------|----------|
+| **社区活跃度** | `contributor_users_count` | >20 大社区，5~20 中等，<5 小团队 |
+| **关注度** | `watchers_count`, `praises_count` | 反映项目知名度 |
+| **研发节奏** | `version_releases_count` | >20 快速迭代，5~20 正常，<5 慢速 |
+| **代码规模** | `size` | 粗略判断项目复杂度 |
+| **开放性** | `forked_count` | fork 数反映二次开发热度 |
+| **PR 活跃度** | `pull_requests_count` | 反映代码贡献频率 |
+
+可选补充（如有需要）：
+
+```bash
+# 查看最近 Issue 活跃度
+gitlink-cli issue +list --owner <owner> --repo <repo> --state open --format json
+
+# 查看最近 Release 情况
+gitlink-cli release +list --owner <owner> --repo <repo> --format json
+```
+
+> ⚠️ **控制分析数量**：深度评估仅对最有价值的 5~8 个项目执行（优先匹配多关键词、watchers 多、updated_at 最近的项目），避免过多 API 调用。
+
+### Step 4：横向对比与趋势分析
+
+#### 4.1 项目分类与镜像识别
+
+在评分之前，先通过 `repo +info` 的 `mirror` 字段区分项目类型：
+
+| 类型 | 判定 | 处理 |
+|------|------|------|
+| **镜像仓库** | `mirror: true` | 标注 `[镜像]`。GitLink 上的 `contributor_users_count`/`watchers_count` 等指标均为 0，不代表真实社区活跃度。评分仅作参考 |
+| **原创仓库** | `mirror: false` 且 `forked_from_project_id: null` | 正常评分 |
+| **Fork 仓库** | `forked_from_project_id` 非 null | 标注 `[Fork]`，评分反映的是 Fork 后的独立开发情况 |
+
+#### 4.2 项目成熟度评分
+
+对每个深度评估的项目，按以下标准打分（满分 25）：
+
+| 维度 | 权重 | 评分标准 |
+|------|------|----------|
+| 社区规模 | 5 | contributor_users_count: >20=5, >10=4, >5=3, >2=2, ≤2=1 |
+| 关注度 | 5 | repo +info 的 watchers_count: >30=5, >15=4, >8=3, >3=2, ≤3=1 |
+| 研发节奏 | 5 | version_releases_count: >10=5, >5=4, >1=3, 0=2。**镜像仓库此项固定给 1**（镜像通常不通过 GitLink 发版）。注意 GitLink 平台 Release 功能使用率低，即使原创仓库 release=0 也建议给 2 而非 1 |
+| 开发活跃 | 5 | 最近 30 天有更新=5, 60 天=4, 90 天=3, 180 天=2, >180 天=1。（基于 `repo +info` 的更新时间或搜索结果中的 `last_update_time`） |
+| 开放性 | 5 | forked_count: >30=5, >15=4, >8=3, >3=2, ≤3=1 |
+
+> **镜像修正**：镜像仓库的社区规模、关注度、开放性三项在 GitLink 上均为 0，应标注"数据为 GitLink 平台内数据，不代表项目在原始平台（GitHub）的真实影响力"，不参与排名比较。
+
+#### 4.3 技术趋势推断
+
+- **增长信号**：近期频繁 Release + contributor 增长 + fork 增长 → 技术热点上升期
+- **成熟信号**：大量 watcher + 稳定 Release 节奏 + 大社区 → 技术趋于成熟
+- **衰退信号**：超过 180 天无更新 + 少量 contributor + 无新 Release → 可能已不活跃
+- **新兴信号**：小社区 + 快速迭代 + 最新更新时间近 → 可能是新兴项目
+
+### Step 5：生成技术调研报告
+
+---
+
+## 输出模板
+
+```markdown
+# 🔬 技术调研报告：{{研究主题}}
+
+> 调研时间：{{当前时间}}
+> 搜索关键词：{{keyword_list}}
+> 搜索命中：{{total_hits}} 个仓库，去重后 {{unique_count}} 个，深度分析 {{deep_analysis_count}} 个
+
+---
+
+## 一、技术格局概览
+
+| 指标 | 数值 |
+|------|------|
+| 相关项目总数 | {{unique_count}} |
+| 主要编程语言 | {{top_languages}} |
+| 平均社区规模 | {{avg_contributors}} 人 |
+| 近 30 天活跃项目 | {{active_30d_count}}（{{active_30d_pct}}%） |
+| 高成熟度项目（≥20分） | {{high_maturity_count}} |
+
+---
+
+## 二、项目成熟度排行榜
+
+| 排名 | 项目 | 类型 | 评分 | 语言 | Watch | 贡献者 | Release | Fork | 关键词匹配 |
+|------|------|------|------|------|-------|--------|---------|------|------------|
+| 1 | {{full_name}} {{#if mirror}}[镜像]{{/if}} | {{原创/镜像/Fork}} | {{score}}/25 | {{language}} | {{watchers}} | {{contributors}} | {{releases}} | {{forks}} | {{matched_keywords}} |
+| ... | ... | ... | ... | ... | ... | ... | ... | ... | ... |
+
+---
+
+## 三、重点项
+
+> 仅展示评分 ≥15 或匹配 3+ 关键词的高潜力项目。
+
+### 🥇 {{项目名}}（{{score}}/25）
+
+| 维度 | 评分 | 说明 |
+|------|------|------|
+| 社区规模 | {{community_score}}/5 | {{contributor_users_count}} 位贡献者 |
+| 关注度 | {{popularity_score}}/5 | {{watchers_count}} watch, {{praises_count}} star |
+| 研发节奏 | {{release_score}}/5 | {{version_releases_count}} 个版本发布 |
+| 开发活跃 | {{activity_score}}/5 | 最后更新于 {{last_update}} |
+| 开放性 | {{openness_score}}/5 | {{forked_count}} 次 fork |
+
+**亮点**：{{一句话总结项目最大优势}}
+**关注点**：{{一句话指出需要关注的风险或不足}}
+
+---
+
+### 🥈 {{项目名}}（{{score}}/25）
+
+（同上格式）
+
+---
+
+## 四、技术趋势洞察
+
+1. **热点方向**：{{当前最热的技术方向，基于项目分布推断}}
+2. **新兴项目**：{{列出 1~3 个"新兴信号"明显的项目}}
+3. **成熟生态**：{{列出 1~2 个"成熟信号"明显的项目，适合作为技术选型参考}}
+4. **风险提示**：{{列出 1~2 个"衰退信号"项目或值得关注的生态空白}}
+
+---
+
+## 五、调研建议
+
+### 技术选型推荐
+
+| 场景 | 推荐项目 | 理由 |
+|------|----------|------|
+| 生产环境使用 | {{最成熟的项目}} | 社区大、更新稳定、文档完善 |
+| 学习入门 | {{最简单的项目}} | 代码量小、贡献门槛低 |
+| 前沿探索 | {{最新兴的项目}} | 技术新颖、迭代快速 |
+
+### 研究选题建议
+
+- {{基于当前生态，建议 2~3 个可深入研究的选题}}
+- {{指出 1~2 个生态空白，可能是创新机会}}
+
+---
+
+## 六、数据来源
+
+所有数据通过 `gitlink-cli` 从 GitLink 平台实时获取，每个项目均已通过 `repo +info` 验证。
+```
+
+---
+
+## 异常场景处理
+
+| 场景 | 处理方式 |
+|------|----------|
+| 关键词无搜索结果 | 尝试近义词或更宽泛的关键词重试，仍无结果则标注"该方向暂无相关项目" |
+| 搜索返回大量结果（>50） | `search +repos` 无分页参数，实际返回约 20 条/关键词。合并后按 `praises_count` 降序取前 20 |
+| 某项目 `repo +info` 返回 404 | 该项目可能为私有或已删除，从列表中移除 |
+| `repo +info` 网络超时/TLS 错误 | 等待 5 秒后重试一次。仍失败则标注"网络请求失败"，跳过该项目继续分析其余 |
+| 大量搜索结果来自镜像仓库 | 优先分析 `mirror: false` 的原创项目。镜像项目保留但标注，评分仅作参考 |
+| 所有项目评分均 <15 | 说明该领域尚未形成成熟生态，调整报告语气为"早期探索阶段" |
+| 用户未提供具体关键词 | 引导用户明确研究主题，提供几个示例关键词供选择 |
+| `language` 字段为 `null` | 标注为"未知" |
+
+---
+
+## 注意事项
+
+- ✅ **所有命令使用 `--format json`**，确保可解析
+- ✅ **本 Skill 为纯只读分析**，不会修改任何仓库
+- ✅ **搜索关键词建议中英文各覆盖**，提高命中率
+- ✅ **深度评估控制在 5~8 个项目**，避免调用过多 API
+- ⚠️ **`search +repos` 和 `repo +info` 字段名不同**：搜索结果用 `praises_count`/`forked_count`/`author.login+identifier`，`repo +info` 才有 `watchers_count`/`full_name`/`mirror`。详见 Step 2 字段映射表
+- ⚠️ **`repo +info` 并发请求可能触发 TLS 超时**，失败时等 5 秒重试一次，不要放弃
+- ⚠️ **GitLink 平台镜像仓库比例高**，镜像仓库的社区数据为 0，不代表项目真实影响力。在报告中标注 `[镜像]` 并单独说明
+- ⚠️ **GitLink Release 功能使用率低**，大部分项目 `version_releases_count`=0。评分时 Release 维度降低权重预期，0 个 Release 给 2 分（而非 1 分）
+- ⚠️ **搜索结果无分页参数**，每次返回约 20 条。关键词超过 5 个时需手动截断合并结果
+- ⚠️ **本 Skill 场景适配 GitLink 平台**，GitLink 以国内开发者和企业项目为主，搜索结果可能偏向中文技术生态，且镜像项目较多

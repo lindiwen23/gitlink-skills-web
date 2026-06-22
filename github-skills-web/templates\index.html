@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="text-center mb-8">
+    <h1 class="text-4xl font-bold text-gray-800 mb-4">GitLink Skills 智能分析服务</h1>
+    <p class="text-lg text-gray-500 max-w-2xl mx-auto">
+        基于 DeepSeek API 和 gitlink-cli，通过 AI Agent 自动搜索、分析 GitLink 平台数据
+    </p>
+</div>
+
+<!-- 工具区 -->
+<h2 class="text-2xl font-bold text-gray-800 mb-4">🔧 工具</h2>
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-12">
+    {% for key, skill in skills.items() %}
+    {% if not key.startswith("lab-") %}
+    <a href="/skills/{{ url_map.get(key, key) }}" class="block p-5 bg-white rounded-xl shadow-sm hover:shadow-md transition border hover:border-blue-200">
+        <h3 class="text-lg font-semibold text-gray-800 mb-1">{{ skill.title }}</h3>
+        <div class="mt-2 text-blue-600 text-sm font-medium">开始使用 →</div>
+    </a>
+    {% endif %}
+    {% endfor %}
+</div>
+
+<!-- 科研实验室: 流程图布局 -->
+<h2 class="text-2xl font-bold text-green-700 mb-4">🔬 科研实验室</h2>
+<p class="text-gray-500 text-sm mb-6">多技能串联合成的科研辅助工作流，覆盖完整科研项目生命周期</p>
+
+<div class="flex flex-col md:flex-row items-center justify-center gap-0 max-w-5xl mx-auto">
+    {% set flow = [
+        ("lab-hotspot", "🔍 热点追踪", "搜项目 → 深挖 → 提取Fork关系 → 生成知识图谱"),
+        ("lab-insight", "📊 项目洞悉", "仓库信息+贡献者+PR/Issue → 全息分析报告"),
+        ("lab-compliance", "✅ 合规检查", "检查License/CI/Release/文档 → 合规评分与改进建议"),
+        ("lab-match", "🤝 协作匹配", "分析Issue+社区健康度 → 评估新手友好度与入门方向"),
+        ("lab-track", "📈 进度跟踪", "批量巡检多仓库 → 健康/警告/危险三级告警"),
+    ] %}
+
+    {% for key, title, desc in flow %}
+    <div class="relative group w-36">
+        <a href="/skills/{{ key }}" class="block">
+            <div class="bg-green-50 border-2 border-green-300 rounded-xl p-4 text-center hover:bg-green-100 hover:border-green-500 hover:shadow-lg transition-all duration-200">
+                <div class="text-sm font-bold text-green-800">{{ title }}</div>
+            </div>
+        </a>
+        <div class="absolute z-10 invisible group-hover:visible opacity-0 group-hover:opacity-100 transition-opacity duration-200 bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 bg-gray-800 text-white text-xs rounded-lg shadow-lg w-48 pointer-events-none">
+            {{ desc }}
+            <div class="absolute top-full left-1/2 -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-gray-800"></div>
+        </div>
+    </div>
+    {% if not loop.last %}
+    <div class="flex items-center justify-center w-8 h-8">
+        <svg class="w-6 h-6 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
+        </svg>
+    </div>
+    {% endif %}
+    {% endfor %}
+</div>
+
+{% endblock %}

@@ -1,0 +1,216 @@
+# gitlink-issue-triage（Issue 智能分拣）
+
+**CRITICAL — 开始前必须先阅读 [`../gitlink-shared/SKILL.md`](../gitlink-shared/SKILL.md)，其中包含认证、权限处理和 API 注意事项。**
+**CRITICAL — 本 Skill 为只读操作，不会修改任何 Issue。无需用户额外确认即可执行。**
+**CRITICAL — GitLink 操作只能用 `gitlink-cli`。禁止用 `gh`（GitHub CLI）操作 GitLink 资源。**
+
+> **前置条件：** 先阅读 [`../gitlink-shared/SKILL.md`](../gitlink-shared/SKILL.md) 了解认证和全局参数。
+
+---
+
+## 功能概述
+
+对仓库的开放 Issue 进行全量扫描和智能分类，输出结构化的分拣报告：
+
+1. **类型分类** — 判断每个 Issue 是 Bug、功能请求、文档问题还是使用咨询
+2. **紧急度评估** — 根据关键词和优先级字段标注紧急程度
+3. **复杂度预估** — 根据描述详尽程度评估修复难度
+4. **行动建议** — 给出具体处理建议（立即修复/需讨论/可关闭/适合作入门任务）
+
+---
+
+## 工作流：Issue 全量分拣
+
+### Step 1：获取项目概览
+
+```bash
+gitlink-cli repo +info --owner <owner> --repo <repo> --format json
+```
+
+提取 `issues_count` 了解 Issue 池总量，`default_branch` 确认主分支。
+
+### Step 2：获取全部开放 Issue
+
+```bash
+gitlink-cli issue +list --owner <owner> --repo <repo> --state open --format json
+```
+
+> ⚠️ **已知问题**：`--state open` 过滤不准确，返回列表可能包含已关闭的 Issue。需在客户端按 `status_id` 二次过滤：保留 `status_id` = 1（新增）或 2（正在解决），排除 3（已解决）、5（关闭）。`status_id` = 0 纳入分析但标注"状态异常"。
+
+如果返回数量 >20，追加分页参数获取全部：
+
+```bash
+gitlink-cli issue +list --owner <owner> --repo <repo> --state open --format json --page 2
+```
+
+### Step 3：逐条深入分析
+
+对过滤后的每条 Issue，获取详情：
+
+```bash
+gitlink-cli issue +view --owner <owner> --repo <repo> --number <project_issues_index> --format json
+```
+
+分析以下维度：
+
+| 维度 | 关注字段 | 分析要点 |
+|------|----------|----------|
+| 类型 | `subject`, `description` | 标题和描述中的关键词 |
+| 紧急度 | `priority`, `subject` | 优先级字段 + 标题紧急信号 |
+| 复杂度 | `description` 长度 | 描述的详细程度、是否有复现步骤 |
+| 活跃度 | `comment_journals_count`, `updated_at` | 讨论热度和最后活跃时间 |
+| 分配状态 | `assigners` | 是否已有人负责 |
+
+### Step 4：分类规则
+
+#### 4.1 类型分类（type）
+
+| 类型 | 匹配规则 |
+|------|----------|
+| **bug** | 标题/描述含 `bug`、`错误`、`失败`、`崩溃`、`异常`、`修复`、`fix`、`修复`、`报错`、`不工作`、`问题`（上下文为故障时） |
+| **feature** | 标题/描述含 `feature`、`新增`、`添加`、`希望`、`建议`、`需要`、`支持`、`实现`，且非故障描述 |
+| **docs** | 标题/描述含 `文档`、`doc`、`README`、`说明`、`教程`、`注释` |
+| **question** | 标题/描述含 `如何`、`怎么`、`是否`、`能不能`、`请问`、`为什么`，且以问号结尾或明显为咨询语气 |
+| **refactor** | 标题/描述含 `重构`、`refactor`、`优化结构`、`代码清理`、`技术债` |
+| **ci** | 标题/描述含 `CI`、`CD`、`构建`、`部署`、`pipeline`、`自动化`、`测试环境` |
+| **meta** | 维护者创建的元讨论帖、反馈收集帖、公告，无具体技术任务指向 |
+| **other** | 不匹配以上任何类型时的兜底分类 |
+
+#### 4.2 紧急度评估（urgency）
+
+| 级别 | 判定条件 |
+|------|----------|
+| **urgent** | 标题含 `紧急`、`urgent`、`hotfix`、`生产`、`线上`、`崩溃`；或 `priority.name` = "紧急" |
+| **high** | `priority.name` = "高"；或标题含 `严重`、`阻塞`、`关键` |
+| **normal** | 默认级别；`priority.name` = "正常" 或无优先级 |
+| **low** | `priority.name` = "低"；或标题含 `优化`、`nice to have`、`小建议` |
+
+#### 4.3 复杂度预估（complexity）
+
+| 级别 | 判定条件 |
+|------|----------|
+| **easy** | 描述简洁明确，有清晰复现步骤或单一功能点；`description` < 300 字且范围明确 |
+| **medium** | 涉及多个文件/模块，需要一定背景了解；`description` 300~800 字，或虽有描述但需推断 |
+| **hard** | 涉及架构变更、新子系统、跨模块重构；`description` > 800 字或非常模糊 |
+
+> **特殊情况**：`description` 仅含图片附件链接而无可读文字 → 视为"描述缺失"，复杂度标记为 hard（因无法评估），建议标记为 discuss。
+
+#### 4.4 行动建议（action）
+
+| 建议 | 判定条件 |
+|------|----------|
+| **fix-now** | bug + urgent/high |
+| **investigate** | bug + normal/low，需先确认复现 |
+| **implement** | feature + 描述清晰 + 范围明确 |
+| **discuss** | 描述模糊、需求不清、或 question 类型 |
+| **close-candidate** | 超过 90 天无更新、无评论、无分配 |
+| **good-first-issue** | complexity=easy + 无人分配 + 范围明确 |
+
+### Step 5：生成分拣报告
+
+将所有分析结果组织输出。
+
+---
+
+## 输出模板
+
+```markdown
+# 📊 {{仓库名}} Issue 分拣报告
+
+> 分析时间：{{当前时间}}
+> Issue 总数：{{total}}，开放：{{open_count}}，本次分析：{{analyzed_count}} 条
+
+---
+
+## 总览
+
+| 指标 | 数量 |
+|------|------|
+| Bug | {{bug_count}} |
+| 功能请求 | {{feature_count}} |
+| 文档 | {{docs_count}} |
+| 咨询 | {{question_count}} |
+| 元讨论 | {{meta_count}} |
+| 其他 | {{other_count}} |
+| **需立即处理** | {{urgent_count}} |
+| **适合入门** | {{good_first_issue_count}} |
+
+---
+
+## 🔴 需立即处理
+
+> 如本段为空，输出：*当前无紧急 Issue，状态健康。*
+
+| # | 标题 | 类型 | 紧急度 | 复杂度 | 建议 | 备注 |
+|---|------|------|--------|--------|------|------|
+| {{number}} | {{subject}} | bug | urgent | medium | fix-now | |
+| ... | ... | ... | ... | ... | ... | ... |
+
+## 🟡 建议近期处理
+
+> 如本段为空，输出：*当前无高优先级 Issue。*
+
+| # | 标题 | 类型 | 紧急度 | 复杂度 | 建议 | 备注 |
+|---|------|------|--------|--------|------|------|
+| ... | ... | bug/feature | high/normal | easy/medium | investigate/implement | |
+
+## 🟢 可延迟 / 需讨论
+
+> 如本段为空，输出：*所有 Issue 均已明确，无需额外讨论。*
+
+| # | 标题 | 类型 | 紧急度 | 复杂度 | 建议 | 备注 |
+|---|------|------|--------|--------|------|------|
+| ... | ... | question/feature | normal/low | medium/hard | discuss | |
+
+## ⭐ 适合入门（Good First Issue）
+
+> 如本段为空，输出：*暂无完全符合条件的入门 Issue。建议在后续工作中拆分出简单子任务。*
+
+| # | 标题 | 类型 | 复杂度 | 推荐理由 |
+|---|------|------|--------|----------|
+| {{number}} | {{subject}} | bug/docs | easy | 范围明确，单文件修改 |
+| ... | ... | ... | ... | ... |
+
+## ⚠️ 候选关闭（90+ 天无活动）
+
+> 如本段为空，输出：*无长期不活跃的 Issue。*
+
+| # | 标题 | 最后更新 | 建议 |
+|---|------|----------|------|
+| {{number}} | {{subject}} | {{updated_at}} | 评论询问是否仍需要，如无回应可关闭 |
+
+---
+
+## 📋 维护建议
+
+1. **立即行动**：{{urgent_count}} 个紧急 Issue 需要优先处理
+2. **本周目标**：建议处理 {{suggested_this_week}} 个 Issue（suggested_this_week = 建议近期处理段中的 Issue 数量，即 bug+normal/high + feature+清晰描述 的总数）
+3. **社区引导**：{{good_first_issue_count}} 个 Issue 适合标记为 good first issue，吸引新贡献者
+4. **清理计划**：{{close_candidate_count}} 个 Issue 长期无活动，建议批量确认后关闭
+5. {{#if no_tags}}本仓库未使用 Issue 标签系统，建议建立标签体系（bug/feature/docs/question/meta/help-wanted/good-first-issue）以提升管理效率{{/if}}
+6. {{#if status_anomalies}}本批次有 {{status_anomaly_count}} 个 Issue 状态异常（status_id=0），建议在平台上手动确认{{/if}}
+```
+
+---
+
+## 异常场景处理
+
+| 场景 | 处理方式 |
+|------|----------|
+| 无开放 Issue | 输出 `repo +info` 概览后，恭喜维护者"Issue 池已清空" |
+| Issue 数量 >50 | 优先分析最近 30 天更新的 Issue，其余标记为"待分批处理" |
+| 全部 Issue 无标签/无优先级 | 分类完全依赖标题和描述关键词分析，并在报告末尾建议建立标签体系 |
+| `description` 为空或仅含图片/附件链接 | 标注"描述缺失"，类型仅根据标题判断，复杂度标为 hard，建议标记为 discuss |
+| `status_id` = 0（未知） | 纳入分析但标注"状态异常" |
+
+---
+
+## 注意事项
+
+- ✅ **所有命令使用 `--format json`**，确保可解析
+- ✅ **`issue +view` 使用 `--number`（网页编号）**，非数据库 ID
+- ✅ **本 Skill 为纯只读分析**，不会修改任何 Issue
+- ✅ **Owner/repo 优先从 `git remote` 自动解析**，无 git 上下文时询问用户
+- ⚠️ **`issue +list --state open` 过滤不准确**，必须客户端按 `status_id` 二次过滤
+- ⚠️ **分类规则是启发式的**，AI 应根据实际内容做判断，不要机械匹配关键词
+- ⚠️ **Issue 数量多时分批处理**，超过 50 条建议先按更新时间排序，优先分析最近活跃的

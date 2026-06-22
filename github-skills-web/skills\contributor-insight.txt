@@ -1,0 +1,247 @@
+# gitlink-contributor-insight（贡献者活跃度分析）
+
+**CRITICAL — 开始前必须先阅读 [`../gitlink-shared/SKILL.md`](../gitlink-shared/SKILL.md)，其中包含认证、权限处理和 API 注意事项。**
+**CRITICAL — 本 Skill 为只读操作，不会修改任何仓库。无需用户额外确认即可执行。**
+**CRITICAL — GitLink 操作只能用 `gitlink-cli`。禁止用 `gh`（GitHub CLI）操作 GitLink 资源。**
+
+> **前置条件：** 先阅读 [`../gitlink-shared/SKILL.md`](../gitlink-shared/SKILL.md) 了解认证和全局参数。
+
+---
+
+## ⚠️ 命令可用性声明
+
+gitlink-cli 的命令集在持续演进中。以下命令**当前版本可能不可用**，执行前先验证：
+
+| 命令 | 状态 | 替代方案 |
+|------|------|----------|
+| `repo +contributors` | ❌ 不可用 | 从 `pr +list` 提取 `author_login` + `repo +info` 获取 `contributor_users_count` |
+| `user +heatmap` | ❌ 不可用 | 从 PR 时间戳手动推算活跃天数 |
+| `user +stats` | ❌ 不可用 | 从 `pr +list` 统计 PR 数；Issue 数通过 `issue +list` 获取 |
+| `user +trends` | ❌ 不可用 | 从 PR 时间分布手动判断趋势（上升/平稳/下降） |
+| `repo +info` | ✅ 可用 | — |
+| `pr +list` | ✅ 可用 | — |
+| `user +info` | ✅ 可用 | — |
+| `issue +list` | ✅ 可用 | — |
+
+> **核心原则**：优先使用可用的 Shortcut 命令。当所需命令不可用时，从 `pr +list` 和 `user +info` 中提取等效数据，并在报告中标注"数据来源：PR 列表（命令 X 不可用）"。
+
+---
+
+## 功能概述
+
+面向开源社区管理者和维护者的贡献者分析工具：
+
+1. **项目概览** — 获取仓库贡献者规模和基本信息
+2. **贡献数据分析** — 通过 `pr +list` 提取每位贡献者的 PR 数量和时间分布
+3. **用户画像** — 通过 `user +info` 了解贡献者背景
+4. **趋势判断** — 从 PR 时间序列推断贡献趋势
+5. **洞察报告** — 生成贡献者活跃度排名和团队健康度评估
+
+---
+
+## 工作流：贡献者分析全流程
+
+### Step 1：获取仓库基本信息
+
+```bash
+gitlink-cli repo +info --owner <owner> --repo <repo> --format json
+```
+
+提取：`contributor_users_count`、`full_name`、`description`、`default_branch`、`fork_info`（如为 Fork 项目）。
+
+### Step 2：获取贡献者列表（通过 PR 数据）
+
+由于 `repo +contributors` 不可用，改用两步获取贡献者：
+
+```bash
+# 2a. 获取所有 PR（含已合并和已关闭）
+gitlink-cli pr +list --owner <owner> --repo <repo> --format json
+
+# 2b. 如果 Issue 数据也需要
+gitlink-cli issue +list --owner <owner> --repo <repo> --format json
+```
+
+从 `pr +list` 返回数据中：
+- 提取所有唯一的 `author_login` 作为实际代码贡献者
+- 统计每位作者的 PR 数（`pull_request_status`: 0=open, 1=merged, 2=closed）
+- 记录每个 PR 的 `pr_full_time` 用于时间分析
+- 记录每个 PR 的 `journals_count`（评论/审核活动数）
+
+从 `issue +list` 返回数据中：
+- 提取所有唯一的 `author_login` 作为 Issue 参与者
+- 统计每位作者的 Issue 数
+
+> 如果 PR 数量较多（>50），按 `author_login` 聚合后取 PR 数前 10 的贡献者分析，报告中注明"基于 Top 10 分析"。
+
+### Step 3：逐位贡献者深度分析
+
+对每位贡献者执行：
+
+```bash
+# 用户基本信息
+gitlink-cli user +info --login <username> --format json
+```
+
+从 `user +info` 提取：`login`、`name`、`created_time`（注册时间）、`user_projects_count`、`user_org_count`、`user_identity`。
+
+**如果 `user +heatmap/+stats/+trends` 可用**（未来版本），补充执行。当前版本用以下替代方案：
+
+| 维度 | 替代数据源 | 分析要点 |
+|------|----------|----------|
+| 贡献频率 | PR 时间戳列表 | 统计活跃天数、相邻 PR 间隔、判断"持续贡献者"还是"间歇参与者" |
+| 贡献产出 | `pr +list` 聚合 | PR 数、Issue 数，区分"代码贡献者"和"问题反馈者" |
+| 活跃趋势 | PR 按日/周聚合 | 贡献量上升/稳定/下降，识别"上升期贡献者"和"逐渐淡出者" |
+
+> ⚠️ **控制 API 调用**：贡献者 >15 人时，仅分析 PR 数最高的前 10 位。每人 1 次 `user +info` 调用（共 ≤10 次），PR 数据已在 Step 2 全量获取。
+
+### Step 4：贡献者分级与分类
+
+#### 4.1 活跃度分级
+
+| 级别 | 判定标准 |
+|------|----------|
+| 🔥 **核心贡献者** | 最近 30 天有贡献 + 总贡献 PR ≥ 5（或总贡献 PR > 10） |
+| 🌟 **活跃贡献者** | 最近 60 天有贡献 + 总贡献 ≥ 3 |
+| 🌱 **新兴贡献者** | 最近 90 天首次出现 + 贡献频率上升 |
+| 💤 **休眠贡献者** | 最近 90 天无贡献 + 历史有贡献 |
+
+> **年轻项目特殊处理**：项目历史 < 30 天时，放宽标准——所有活跃贡献者均可标记为核心贡献者，报告中注明"项目处于早期阶段，分级标准已放宽"。
+
+#### 4.2 贡献类型分类
+
+| 类型 | 判定 |
+|------|------|
+| **代码贡献者** | PR 数量 > Issue 数量 |
+| **问题反馈者** | Issue 数量 > PR 数量 |
+| **全能贡献者** | PR 和 Issue 数量均衡（差异 ≤ 1） |
+
+### Step 5：生成贡献者洞察报告
+
+按下方输出模板生成报告，并根据数据可用性灵活调整章节。
+
+---
+
+## 输出模板
+
+```markdown
+# 👥 贡献者洞察报告：{{仓库名}}
+
+> 分析时间：{{当前时间}}
+> 仓库：{{full_name}}
+> 总贡献者：{{contributor_users_count}} 人，本次分析：{{analyzed_count}} 人
+
+---
+
+## 一、团队概览
+
+| 指标 | 数值 |
+|------|------|
+| 总贡献者 | {{contributor_users_count}} |
+| 核心贡献者 | {{core_count}} |
+| 活跃贡献者 | {{active_count}} |
+| 新兴贡献者 | {{new_count}} |
+| 休眠贡献者 | {{dormant_count}} |
+| 近 30 天活跃率 | {{active_30d_rate}}% |
+
+---
+
+## 二、贡献者活跃度排行榜
+
+| 排名 | 贡献者 | 级别 | 类型 | 活跃天数 | 总PR | 总Issue | 趋势 |
+|------|--------|------|------|---------|------|---------|------|
+| 1 | {{login}} | 🔥 | 代码 | {{d}} 天 | {{pr_count}} | {{issue_count}} | ↑ |
+| ... | ... | ... | ... | ... | ... | ... | ... |
+
+---
+
+## 三、重点贡献者分析
+
+> 仅展示核心/活跃贡献者。
+
+### 🔥 {{login}}（核心贡献者）
+
+| 维度 | 数据 | 说明 |
+|------|------|------|
+| 活跃天数 | {{d}} 天 | {{评价}} |
+| 总 PR 数 | {{pr_count}} | |
+| 总 Issue 数 | {{issue_count}} | |
+| 贡献趋势 | {{trend_direction}} | {{trend_comment}} |
+
+**PR 贡献明细**：（可选，数据充足时展示）
+
+| PR# | 标题 | 日期 | 类型 |
+|-----|------|------|------|
+| ... | ... | ... | feat/fix/refactor |
+
+---
+
+## 四、团队健康度评估
+
+### 健康度指标
+
+| 指标 | 状态 | 说明 |
+|------|------|------|
+| 核心贡献者占比 | {{core_ratio}}% | {{core_comment}} |
+| 新老比例 | {{new_old_ratio}} | {{new_old_comment}} |
+| 贡献频率稳定性 | {{stability}} | {{stability_comment}} |
+| 知识分散度 | {{bus_factor}} | {{bus_factor_comment}} |
+
+### 风险提示
+
+- ⚠️ **核心贡献者不足**（当 core_count < 3 时）：仅 {{core_count}} 位核心贡献者，存在单点依赖风险（Bus Factor = {{core_count}}）。
+- ⚠️ **贡献者流失**（当 dormant_rate > 50% 时）：超过一半的贡献者已不活跃，需要关注社区留存。
+- ⚠️ **缺少新鲜血液**（当 new_count == 0 时）：近期无新兴贡献者，建议通过 Good First Issue 等方式吸引新人。
+- ℹ️ **项目处于早期阶段**（当项目历史 < 30 天时）：贡献者分级标准已放宽，以上风险置信度有限。
+- ✅ **团队健康**（当以上情况均不满足时）：贡献者结构合理，团队运转良好。
+
+---
+
+## 五、社区建设建议
+
+1. **激励核心贡献者**：{{核心贡献者维护建议}}
+2. **激活休眠贡献者**：{{休眠贡献者召回建议}}
+3. **吸引新贡献者**：{{新贡献者吸引建议}}
+4. **平衡贡献类型**：{{贡献类型平衡建议}}
+
+---
+
+## 📋 数据来源与局限性
+
+| 数据维度 | 来源 | 可靠性 |
+|----------|------|--------|
+| 贡献者数量 | `repo +info` | ✅ 可靠 |
+| PR 贡献数据 | `pr +list` 全量 | ✅ 可靠 |
+| Issue 数据 | `issue +list` | ✅ 可靠 |
+| 用户信息 | `user +info` | ✅ 可靠 |
+| 贡献热力图 | 不可用（命令未实现） | ❌ 缺失 |
+| 统计信息 | 不可用（命令未实现） | ❌ 缺失 |
+| 趋势数据 | 不可用（命令未实现） | ❌ 缺失 |
+
+> **局限性**：本报告仅反映 GitLink 平台活动，不包括其他平台（GitHub、GitLab 等）的数据。
+```
+
+---
+
+## 异常场景处理
+
+| 场景 | 处理方式 |
+|------|----------|
+| `repo +contributors` 不可用（当前版本常态） | 从 `pr +list` 的 `author_login` 提取贡献者列表 |
+| `user +heatmap` / `+stats` / `+trends` 不可用 | 从 PR 时间戳推算活跃天数，PR 聚合得产出量，时间分布得趋势 |
+| `pr +list` 返回空 | 标注"仓库暂无 PR 数据"，仅展示 `repo +info` 基本信息 |
+| `user +info` 返回空 | 标注"用户信息不可用"，仅展示 PR 统计 |
+| 贡献者 > 15 人 | 仅分析 PR 数最高的前 10 位，报告中注明"基于 Top 10 分析" |
+| 项目历史 < 30 天 | 放宽分级标准，报告中注明"项目处于早期阶段" |
+| `issue +list` 返回空 | Issue 数列为 0，贡献类型统一标注"代码贡献者" |
+
+---
+
+## 注意事项
+
+- ✅ **所有命令使用 `--format json`**，确保可解析
+- ✅ **本 Skill 为纯只读分析**，不会修改任何仓库
+- ✅ **Owner/repo 优先从 `git remote` 自动解析**，无 git 上下文时询问用户
+- ⚠️ **核心数据来源为 `pr +list`**：当前版本 gitlink-cli 中 `user +heatmap/+stats/+trends` 不可用，分析主要依赖 PR 列表数据
+- ⚠️ **`repo +contributors` 不可用**：贡献者列表从 PR 作者提取，可能与实际 `contributor_users_count` 有差异（后者包含未提 PR 的参与者）
+- ⚠️ **数据仅反映 GitLink 平台活动**：不包括 GitHub 或其他平台的数据
+- ℹ️ **参照样例**：[`EXAMPLES.md`](EXAMPLES.md) 包含手动执行和 Agent 调用两种场景的完整样例，[`examples/jiangtx-gitlink-cli.md`](examples/jiangtx-gitlink-cli.md) 包含原始命令输出数据
