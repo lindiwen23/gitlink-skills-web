@@ -7,8 +7,8 @@ import subprocess
 HOST = "121.41.212.97"
 PORT = 22
 USER = "root"
-PASSWORD = "pdl@#YwC$WRWFyHKxC8nyu!4"
-API_KEY = "sk-495af5d6ba054502973f095d6b9c3202"
+PASSWORD = "<YOUR_PASSWORD>"
+API_KEY = "<YOUR_API_KEY>"
 
 LOCAL_DIR = os.path.dirname(os.path.abspath(__file__))
 REMOTE_DIR = "/opt/gitlink-web"
